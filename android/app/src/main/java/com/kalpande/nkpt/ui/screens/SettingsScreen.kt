@@ -34,6 +34,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kalpande.nkpt.BuildConfig
+import com.kalpande.nkpt.data.DEFAULT_DATA_REPO
 import com.kalpande.nkpt.data.Market
 import com.kalpande.nkpt.data.Tokens
 import com.kalpande.nkpt.domain.Format
@@ -85,6 +86,51 @@ fun SettingsScreen(vm: MainViewModel, ui: UiState) {
                 }
                 VSpace(6)
                 Text("Use your long-lived Upstox (extended) token - the same one as the NSE alert bot. It stays on this phone only: it is never put in backups, never sent anywhere except Upstox.", color = Palette.Muted, fontSize = 11.sp)
+            }
+        }
+
+        SectionTitle("Online storage (GitHub)")
+        Card(Modifier.fillMaxWidth()) {
+            Column {
+                val st by vm.sync.collectAsStateWithLifecycle()
+                var ghToken by remember { mutableStateOf("") }
+                var repo by remember(st.repo) { mutableStateOf(st.repo.ifBlank { DEFAULT_DATA_REPO }) }
+                if (st.enabled) {
+                    Text("✅ Saving to ${st.repo} as ${st.user}", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                    Text("Every order, fill, exit and edit is committed to users/${st.user}/<NSE|US>/ (state.json, trades.csv, orders.csv, daily/<date>.json).",
+                        color = Palette.Muted, fontSize = 12.sp)
+                    VSpace(4)
+                    Text(
+                        (if (st.pushing) "Syncing… · " else "") +
+                            "Last saved: ${if (st.lastPush > 0) Format.time(ui.market, st.lastPush, "dd MMM HH:mm:ss") else "—"}" +
+                            " · Last loaded: ${if (st.lastPull > 0) Format.time(ui.market, st.lastPull, "dd MMM HH:mm") else "—"}",
+                        color = Palette.Muted, fontSize = 12.sp,
+                    )
+                    st.error?.let { Text("⚠️ $it - will retry", color = Palette.Down, fontSize = 12.sp) }
+                    VSpace(8)
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(onClick = vm::syncNow, shape = RoundedCornerShape(10.dp)) { Text("Sync now") }
+                        OutlinedButton(onClick = vm::disconnectGitHub, shape = RoundedCornerShape(10.dp)) { Text("Disconnect") }
+                    }
+                } else {
+                    Text("Keep both accounts online in a private GitHub repo - one folder per user, a commit on every change and a file per day, " +
+                        "ready to pull for strategy research. A new phone loads everything back on connect.", color = Palette.Muted, fontSize = 12.sp)
+                    st.error?.let { Text("⚠️ $it", color = Palette.Down, fontSize = 12.sp) }
+                    VSpace(10)
+                    OutlinedTextField(repo, { repo = it.trim() }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Data repo (owner/name)", fontSize = 12.sp) }, shape = RoundedCornerShape(10.dp), colors = colors)
+                    VSpace(8)
+                    OutlinedTextField(ghToken, { ghToken = it.trim() }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("GitHub token (github_pat_…)") }, visualTransformation = PasswordVisualTransformation(),
+                        shape = RoundedCornerShape(10.dp), colors = colors)
+                    VSpace(8)
+                    Button(onClick = { vm.connectGitHub(ghToken, repo) }, enabled = ghToken.isNotBlank() && "/" in repo,
+                        shape = RoundedCornerShape(10.dp)) { Text("Connect") }
+                    VSpace(6)
+                    Text("Create it at github.com → Settings → Developer settings → Fine-grained tokens: Repository access = only $repo, " +
+                        "Permissions → Contents = Read and write. The token stays on this phone (never in backups or the data repo).",
+                        color = Palette.Muted, fontSize = 11.sp)
+                }
             }
         }
 

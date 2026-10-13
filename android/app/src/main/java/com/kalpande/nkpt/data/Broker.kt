@@ -14,6 +14,18 @@ data class RefreshResult(val account: Account, val quotes: Map<String, Quote>, v
 class Broker(val store: AccountStore, val data: MarketData, val settings: SettingsRepository) {
     private fun now() = System.currentTimeMillis() / 1000
 
+    /** Called after every change worth saving online (the cloud sync hooks in here). */
+    @Volatile var onChange: (Market, String) -> Unit = { _, _ -> }
+
+    private fun Account.touched() = copy(updatedAt = maxOf(now(), updatedAt + 1))
+
+    /** [store.update] that stamps the account as changed and tells the sync. */
+    private suspend fun <T> change(m: Market, why: String, block: suspend (Account) -> Pair<Account, T>): T {
+        val r = store.update(m) { a -> block(a).let { (n, v) -> (if (n == a) n else n.touched()) to v } }
+        onChange(m, why)
+        return r
+    }
+
     /**
      * Quotes for the watchlist, positions and working orders (+ [extra]), then the live-quote pass;
      * with [bars] also the 1-minute bar pass for every instrument with a working order or exit.
@@ -36,21 +48,23 @@ class Broker(val store: AccountStore, val data: MarketData, val settings: Settin
             val ev = mutableListOf<EngineEvent>()
             if (barMap.isNotEmpty()) Engine.onBars(x, barMap, t, s).let { (n, e) -> x = n; ev += e }
             Engine.onQuotes(x, quotes, t, s).let { (n, e) -> x = n; ev += e }
-            x to (x to ev)
+            val y = if (ev.isNotEmpty()) x.touched() else x
+            y to (y to ev)
         }
+        if (events.isNotEmpty()) onChange(m, events.joinToString("; ") { it.text })
         return RefreshResult(acc, quotes, events)
     }
 
     suspend fun place(m: Market, req: OrderRequest): PlaceResult {
         val s = settings.tradeNow()
         val q = runCatching { data.quotes(m, listOf(req.instrument.key))[req.instrument.key] }.getOrNull()
-        return store.update(m) { a ->
+        return change(m, "${req.side} ${req.qty} ${req.instrument.symbol} ${req.type}") { a ->
             val r = Engine.place(a, req, q, now(), s)
             r.account to r
         }
     }
 
-    suspend fun cancel(m: Market, orderId: String) = store.update(m) { a -> Engine.cancel(a, orderId) to Unit }
+    suspend fun cancel(m: Market, orderId: String) = change(m, "cancel order") { a -> Engine.cancel(a, orderId) to Unit }
 
     suspend fun exit(m: Market, position: Position): PlaceResult {
         val ins = Instrument(m, position.symbol, position.name, position.key)
@@ -59,11 +73,11 @@ class Broker(val store: AccountStore, val data: MarketData, val settings: Settin
     }
 
     suspend fun modifyExits(m: Market, positionId: String, sl: Double?, target: Double?): String? =
-        store.update(m) { a -> Engine.modifyExits(a, positionId, sl, target) }
+        change(m, "edit SL/target $positionId") { a -> Engine.modifyExits(a, positionId, sl, target) }
 
-    suspend fun setWatchlist(m: Market, items: List<Instrument>) = store.update(m) { a -> a.copy(watchlist = items) to Unit }
+    suspend fun setWatchlist(m: Market, items: List<Instrument>) = change(m, "watchlist") { a -> a.copy(watchlist = items) to Unit }
 
-    suspend fun addStrategy(m: Market, name: String) = store.update(m) { a ->
+    suspend fun addStrategy(m: Market, name: String) = change(m, "strategy $name") { a ->
         (if (name.isBlank() || name in a.strategies) a else a.copy(strategies = a.strategies + name.trim())) to Unit
     }
 
@@ -72,11 +86,11 @@ class Broker(val store: AccountStore, val data: MarketData, val settings: Settin
 
     /** Replaces the accounts listed in [b] (and the fill settings); markets not in the file are left as they are. */
     suspend fun restore(b: BackupFile) {
-        b.accounts.forEach { acc -> store.update(acc.market) { acc to Unit } }
+        b.accounts.forEach { acc -> change(acc.market, "restore from backup") { acc.copy(updatedAt = 0) to Unit } }
         b.trade?.let { settings.setTrade(it) }
     }
 
-    suspend fun reset(m: Market) = store.update(m) { a ->
+    suspend fun reset(m: Market) = change(m, "reset account") { a ->
         Account(m, createdAt = now(), watchlist = a.watchlist, strategies = a.strategies) to Unit
     }
 }

@@ -4,7 +4,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
@@ -29,6 +31,16 @@ object Http {
             body
         }
     }
+
+    /** Any method with an optional JSON body; returns (status code, body) without throwing on 4xx/5xx. */
+    suspend fun send(method: String, url: String, body: String? = null, headers: Map<String, String> = emptyMap()): Pair<Int, String> =
+        withContext(Dispatchers.IO) {
+            val rb = body?.toRequestBody("application/json; charset=utf-8".toMediaType())
+            val b = Request.Builder().url(url).method(method, rb ?: if (method == "GET" || method == "DELETE") null else ByteArray(0).toRequestBody(null))
+                .header("User-Agent", "NayanKalpandePT/1.3")
+            headers.forEach { (k, v) -> b.header(k, v) }
+            client.newCall(b.build()).execute().use { r -> r.code to (r.body?.string().orEmpty()) }
+        }
 
     suspend fun bytes(url: String): ByteArray = withContext(Dispatchers.IO) {
         val req = Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build()

@@ -73,6 +73,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private var loop: Job? = null
 
+    /** GitHub data sync status (Settings). */
+    val sync = nk.cloud.status
+
     /** Tests / screenshots: no network from open() and the chart. */
     var offline = false
     private var watching: Instrument? = null
@@ -82,6 +85,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val m = nk.settings.market.first()
             _ui.update { it.copy(market = m, trade = nk.settings.tradeNow(), token = nk.settings.tokenNow()) }
             reloadAccounts()
+            if (!offline) syncPull(quiet = true)
         }
         Market.entries.forEach { m ->
             viewModelScope.launch {
@@ -107,6 +111,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val m = _ui.value.market
                 refreshMarket(m, bars = tick % 12 == 0)
                 if (tick % 12 == 6) refreshMarket(Market.entries.first { it != m }, bars = true)
+                if (tick % 6 == 3) runCatching { nk.cloud.maintain() }       // retry failed pushes, end-of-day file
                 tick++
                 val slow = m == Market.NSE && _ui.value.token.isBlank()
                 delay(if (slow) 12_000 else 5_000)
@@ -310,6 +315,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _ui.update { it.copy(token = t.trim()) }
         toast(if (t.isBlank()) "Upstox token removed - NSE prices from 1-minute candles" else "Upstox token saved - live NSE quotes on")
         refreshMarket(Market.NSE, bars = false)
+    }
+
+    // ─── GitHub data sync ────────────────────────────────────────────────
+
+    private suspend fun syncPull(quiet: Boolean) {
+        val changed = nk.cloud.pull()
+        if (changed.isNotEmpty()) {
+            reloadAccounts()
+            toast("Loaded newer ${changed.joinToString(" + ") { it.label }} data from GitHub")
+        } else if (!quiet) nk.cloud.status.value.error?.let { toast(it) }
+    }
+
+    fun connectGitHub(token: String, repo: String) = viewModelScope.launch {
+        nk.cloud.connect(token, repo).fold(
+            { login -> reloadAccounts(); toast("Connected as $login - data now saved to $repo") },
+            { toast("GitHub: ${it.message}") })
+    }
+
+    fun disconnectGitHub() = viewModelScope.launch { nk.cloud.disconnect(); toast("GitHub sync off - data stays on this phone") }
+
+    fun syncNow() = viewModelScope.launch {
+        syncPull(quiet = false)
+        val ok = Market.entries.map { nk.cloud.push(it, "manual sync") }.all { it }
+        toast(if (ok) "Synced to GitHub" else "Sync failed: ${nk.cloud.status.value.error}")
     }
 
     fun setTrade(s: TradeSettings) = viewModelScope.launch { nk.settings.setTrade(s); _ui.update { it.copy(trade = s) } }

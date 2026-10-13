@@ -31,6 +31,9 @@ class FillWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
             if (!Engine.hasWork(a)) continue
             runCatching { app.broker.refresh(m) }.onSuccess { events += it.events }
         }
+        // the debounced push may not outlive this worker: push what changed now, plus any end-of-day file
+        for (m in events.map { it.market }.toSet()) app.cloud.push(m, "background fills")
+        runCatching { app.cloud.maintain() }
         notify(applicationContext, events)
         return Result.success()
     }
