@@ -217,7 +217,7 @@ class ScreenshotTest {
         val st = state(Market.US, usWatch = true); val v = vm(st)
         var p = 180.0
         val day0 = ZonedDateTime.of(LocalDate.of(2026, 3, 2), LocalTime.of(9, 30), ZoneId.of("America/New_York")).toEpochSecond()
-        val bars = (0 until 160).map { i -> val o = p; p *= 1 + 0.018 * sin(i / 5.0) + 0.004; Candle(day0 + i * 86400L, o, maxOf(o, p) * 1.01, minOf(o, p) * 0.99, p, 4e7 + 2e7 * sin(i / 2.0)) }
+        val bars = (0 until 400).map { i -> val o = p; p *= 1 + 0.018 * sin(i / 5.0) + 0.0015 * sin(i / 60.0) + 0.002; Candle(day0 + i * 86400L, o, maxOf(o, p) * 1.01, minOf(o, p) * 0.99, p, 4e7 + 2e7 * sin(i / 2.0)) }
         v.seedChart(ChartState("SNDK", Timeframe.D1, bars))
         snap("04b_detail_us_daily") { DetailScreen(v, st, Market.US, "SNDK") {} }
     }
