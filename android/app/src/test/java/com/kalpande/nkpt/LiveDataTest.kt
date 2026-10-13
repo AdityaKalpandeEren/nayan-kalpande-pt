@@ -45,6 +45,14 @@ class LiveDataTest {
             println("${ins.symbol} ${tf.label}: ${c.size} candles, last ${c.lastOrNull()}")
             assertTrue("${ins.symbol} ${tf.label} empty", c.isNotEmpty())
         }
+        val sndk = repo.ensure(Market.US).first { it.symbol == "SNDK" }
+        for (tf in Timeframe.entries) {
+            val c = data.candles(sndk, tf)
+            assertTrue("SNDK ${tf.label} empty", c.isNotEmpty())
+            assertTrue("SNDK ${tf.label} not strictly increasing", c.zipWithNext().all { (a, b) -> b.t > a.t })
+            println("SNDK ${tf.label}: ${c.size} aligned candles, last ${c.last()}")
+        }
+        println("SNDK live quote: ${data.liveQuote(Market.US, "SNDK")}")
         val now = System.currentTimeMillis() / 1000
         println("RELIANCE 1m bars since 2 days: ${data.bars(Market.NSE, rel.key, now - 2 * 86400).size}")
         println("AAPL 1m bars since 2 days: ${data.bars(Market.US, "AAPL", now - 2 * 86400).size}")

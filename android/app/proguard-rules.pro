@@ -13,5 +13,3 @@
 -dontwarn org.bouncycastle.**
 -dontwarn org.conscrypt.**
 -dontwarn org.openjsse.**
-# Chart bridge called from JavaScript
--keepclassmembers class * { @android.webkit.JavascriptInterface <methods>; }

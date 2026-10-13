@@ -112,8 +112,12 @@ class MarketData(private val token: () -> String) {
 
     // ─── candles ─────────────────────────────────────────────────────────
 
+    /** Chart candles, session-aligned (see [com.kalpande.nkpt.domain.Bars]). */
     suspend fun candles(ins: Instrument, tf: Timeframe): List<Candle> =
-        if (ins.market == Market.US) yahooCandles(ins.key, tf) else nseCandles(ins.key, tf)
+        com.kalpande.nkpt.domain.Bars.normalize(ins.market, tf, if (ins.market == Market.US) yahooCandles(ins.key, tf) else nseCandles(ins.key, tf))
+
+    /** The latest trade price of one instrument, as fast as the source allows (for the open chart). */
+    suspend fun liveQuote(m: Market, key: String): Quote? = quotes(m, listOf(key))[key]
 
     private suspend fun nseCandles(key: String, tf: Timeframe): List<Candle> = coroutineScope {
         val today = LocalDate.now(MarketHours.zone(Market.NSE))
