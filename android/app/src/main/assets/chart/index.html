@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<style>
+  html, body { margin: 0; padding: 0; background: #0B0F17; height: 100%; overflow: hidden;
+               font-family: -apple-system, Roboto, "Segoe UI", sans-serif; }
+  #chart { position: absolute; inset: 0; }
+  #legend { position: absolute; left: 8px; top: 6px; z-index: 3; font-size: 11px; color: #8B95A7;
+            pointer-events: none; font-variant-numeric: tabular-nums; line-height: 1.5; }
+  #legend b { color: #E6EAF2; font-weight: 600; }
+  .up { color: #00C087 !important; } .down { color: #F6465D !important; }
+  #empty { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+           color: #8B95A7; font-size: 13px; }
+</style>
+<script src="lightweight-charts.js"></script>
+</head>
+<body>
+<div id="chart"></div>
+<div id="legend"></div>
+<div id="empty">No candles for this timeframe</div>
+<script>
+  // Lightweight Charts(TM) by TradingView - Apache License 2.0 (see the app's About / licences).
+  const el = document.getElementById('chart');
+  const legend = document.getElementById('legend');
+  const chart = LightweightCharts.createChart(el, {
+    autoSize: true,
+    layout: { background: { type: 'solid', color: '#0B0F17' }, textColor: '#8B95A7', fontSize: 11 },
+    grid: { vertLines: { color: 'rgba(38,48,68,0.45)' }, horzLines: { color: 'rgba(38,48,68,0.45)' } },
+    rightPriceScale: { borderColor: '#263044', scaleMargins: { top: 0.12, bottom: 0.22 } },
+    timeScale: { borderColor: '#263044', timeVisible: true, secondsVisible: false, rightOffset: 4, barSpacing: 7 },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal,
+                 vertLine: { color: '#4C8DFF', labelBackgroundColor: '#4C8DFF' },
+                 horzLine: { color: '#4C8DFF', labelBackgroundColor: '#4C8DFF' } },
+    handleScale: { axisPressedMouseMove: true, pinch: true, mouseWheel: true },
+    handleScroll: { horzTouchDrag: true, vertTouchDrag: false },
+  });
+  const candles = chart.addCandlestickSeries({
+    upColor: '#00C087', downColor: '#F6465D', borderVisible: false,
+    wickUpColor: '#00C087', wickDownColor: '#F6465D', priceLineColor: '#4C8DFF',
+  });
+  const volume = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: 'vol', lastValueVisible: false, priceLineVisible: false });
+  chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+  const ema20 = chart.addLineSeries({ color: '#F0B90B', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+  const ema50 = chart.addLineSeries({ color: '#B46CFF', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+  const vwap = chart.addLineSeries({ color: '#2EC5FF', lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+  let lines = [], data = [], decimals = 2, lastKey = '';
+
+  function ema(src, n) {
+    const k = 2 / (n + 1), out = []; let e = null;
+    for (const c of src) { e = e === null ? c.close : c.close * k + e * (1 - k); out.push({ time: c.time, value: e }); }
+    return out.slice(Math.min(n - 1, out.length));
+  }
+  function sessionVwap(src, dayLen) {
+    const out = []; let pv = 0, v = 0, day = null;
+    for (const c of src) {
+      const d = Math.floor(c.time / dayLen);
+      if (d !== day) { day = d; pv = 0; v = 0; }
+      const tp = (c.high + c.low + c.close) / 3, vol = c.volume || 0;
+      pv += tp * vol; v += vol;
+      if (v > 0) out.push({ time: c.time, value: pv / v });
+    }
+    return out;
+  }
+  function fmt(x) { return x == null ? '-' : x.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }); }
+  function showLegend(c) {
+    if (!c) { legend.innerHTML = ''; return; }
+    const prev = data[data.findIndex(d => d.time === c.time) - 1];
+    const chg = prev ? (c.close - prev.close) / prev.close * 100 : 0;
+    const cls = c.close >= c.open ? 'up' : 'down';
+    legend.innerHTML = `O <b>${fmt(c.open)}</b> H <b>${fmt(c.high)}</b> L <b>${fmt(c.low)}</b> C <b class="${cls}">${fmt(c.close)}</b> ` +
+      `<span class="${chg >= 0 ? 'up' : 'down'}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span>` +
+      (c.volume ? ` &nbsp;Vol <b>${Math.round(c.volume).toLocaleString('en-US')}</b>` : '');
+  }
+  chart.subscribeCrosshairMove(p => {
+    const c = p && p.time ? data.find(d => d.time === p.time) : null;
+    showLegend(c || data[data.length - 1]);
+  });
+
+  // Called from Kotlin: render({candles:[{time,open,high,low,close,volume}], lines:[{price,color,title}],
+  //   markers:[{time,position,color,shape,text}], ema:true, vwap:true, intraday:true, decimals:2, key:'...'})
+  window.render = function (cfg) {
+    data = cfg.candles || [];
+    decimals = cfg.decimals == null ? 2 : cfg.decimals;
+    document.getElementById('empty').style.display = data.length ? 'none' : 'flex';
+    candles.applyOptions({ priceFormat: { type: 'price', precision: decimals, minMove: Math.pow(10, -decimals) } });
+    candles.setData(data.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close })));
+    volume.setData(data.map(c => ({ time: c.time, value: c.volume || 0,
+      color: c.close >= c.open ? 'rgba(0,192,135,0.35)' : 'rgba(246,70,93,0.35)' })));
+    ema20.setData(cfg.ema ? ema(data, 20) : []);
+    ema50.setData(cfg.ema ? ema(data, 50) : []);
+    vwap.setData(cfg.vwap && cfg.intraday ? sessionVwap(data, 86400) : []);
+    lines.forEach(l => candles.removePriceLine(l));
+    lines = (cfg.lines || []).map(l => candles.createPriceLine({ price: l.price, color: l.color, lineWidth: 1,
+      lineStyle: 2, axisLabelVisible: true, title: l.title }));
+    candles.setMarkers((cfg.markers || []).sort((a, b) => a.time - b.time));
+    chart.applyOptions({ timeScale: { timeVisible: !!cfg.intraday } });
+    if (cfg.key !== lastKey) { chart.timeScale().fitContent(); lastKey = cfg.key; }
+    showLegend(data[data.length - 1]);
+  };
+  if (window.Android) window.Android.ready();
+</script>
+</body>
+</html>

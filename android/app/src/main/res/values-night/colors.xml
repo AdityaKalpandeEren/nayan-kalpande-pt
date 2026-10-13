@@ -1,0 +1,7 @@
+<resources>
+    <color name="bg">#0B0F17</color>
+    <color name="icon_bg">#0B0F17</color>
+    <color name="icon_up">#00C087</color>
+    <color name="icon_down">#F6465D</color>
+    <color name="icon_line">#F0B90B</color>
+</resources>
