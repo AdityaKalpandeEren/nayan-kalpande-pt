@@ -2,10 +2,13 @@ package com.kalpande.nkpt.ui
 
 import android.app.Application
 import android.content.Intent
+import android.net.Uri
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.kalpande.nkpt.BuildConfig
 import com.kalpande.nkpt.NkptApp
+import com.kalpande.nkpt.data.BackupFile
 import com.kalpande.nkpt.data.Account
 import com.kalpande.nkpt.data.Candle
 import com.kalpande.nkpt.data.Instrument
@@ -18,6 +21,7 @@ import com.kalpande.nkpt.domain.EngineEvent
 import com.kalpande.nkpt.domain.Format
 import com.kalpande.nkpt.domain.TradeSettings
 import com.kalpande.nkpt.work.FillWorker
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,6 +31,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 data class UiState(
@@ -52,7 +57,7 @@ data class SearchState(
     val listReady: Boolean = false,
 )
 
-data class ChartState(val key: String = "", val tf: Timeframe = Timeframe.M5, val candles: List<Candle> = emptyList(), val loading: Boolean = false, val error: String? = null)
+data class ChartState(val key: String = "", val tf: Timeframe = Timeframe.M5, val candles: List<Candle> = emptyList(), val loading: Boolean = false, val error: String? = null, val live: Quote? = null)
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val nk = app as NkptApp
@@ -195,14 +200,44 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ─── instrument detail ───────────────────────────────────────────────
 
+    private var live: Job? = null
+
     fun open(i: Instrument) {
         watching = i
         if (offline) return
         loadChart(i, _chart.value.tf.takeIf { _chart.value.key == i.key } ?: if (i.tradable) Timeframe.M5 else Timeframe.D1)
-        viewModelScope.launch { refreshMarket(i.market, bars = false) }
+        live?.cancel()
+        live = viewModelScope.launch {
+            var n = 0
+            while (isActive) {
+                // live price for the open chart: every 2 s (US, or NSE with the Upstox token); 5 s from NSE 1-minute candles
+                runCatching { broker.data.liveQuote(i.market, i.key) }.getOrNull()?.let { q ->
+                    _ui.update { it.copy(quotes = it.quotes + (q.key to q)) }
+                    _chart.update { c ->
+                        if (c.key != i.key || c.candles.isEmpty()) c
+                        else c.copy(candles = com.kalpande.nkpt.domain.Bars.tick(i.market, c.tf, c.candles, q.price, q.time), live = q)
+                    }
+                }
+                n++
+                val fast = i.market == Market.US || _ui.value.token.isNotBlank()
+                // re-download the candles every minute so the bars match the exchange's exactly
+                if (n % (if (fast) 30 else 12) == 0) reloadChart(i)
+                delay(if (fast) 2_000 else 5_000)
+            }
+        }
     }
 
-    fun close() { watching = null }
+    fun close() { watching = null; live?.cancel(); live = null }
+
+    private suspend fun reloadChart(i: Instrument) {
+        val c = _chart.value
+        if (c.key != i.key || c.loading) return
+        val fresh = runCatching { broker.data.candles(i, c.tf) }.getOrNull() ?: return
+        _chart.update { now ->
+            if (now.key != i.key || now.tf != c.tf || fresh.isEmpty()) now
+            else now.copy(candles = now.live?.let { q -> com.kalpande.nkpt.domain.Bars.tick(i.market, now.tf, fresh, q.price, q.time) } ?: fresh)
+        }
+    }
 
     fun seedChart(c: ChartState) { _chart.value = c }
 
@@ -213,8 +248,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val r = runCatching { broker.data.candles(i, tf) }
             if (_chart.value.key == i.key && _chart.value.tf == tf) {
-                _chart.value = ChartState(i.key, tf, r.getOrDefault(_chart.value.candles), false,
-                    r.exceptionOrNull()?.let { "Couldn't load candles: ${it.message}" })
+                val q = _ui.value.quotes[i.key]
+                val got = r.getOrDefault(_chart.value.candles).let { c -> if (q != null && c.isNotEmpty()) com.kalpande.nkpt.domain.Bars.tick(i.market, tf, c, q.price, q.time) else c }
+                _chart.value = ChartState(i.key, tf, got, false,
+                    r.exceptionOrNull()?.let { "Couldn't load candles (${it.message?.take(60)}) - tap the timeframe to retry" }, q)
             }
         }
     }
@@ -276,6 +313,43 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setTrade(s: TradeSettings) = viewModelScope.launch { nk.settings.setTrade(s); _ui.update { it.copy(trade = s) } }
+
+    // ─── backup / restore ────────────────────────────────────────────────
+
+    private val _restore = MutableStateFlow<BackupFile?>(null)
+    /** A parsed backup waiting for the user's confirmation. */
+    val pendingRestore: StateFlow<BackupFile?> = _restore.asStateFlow()
+
+    fun backupTo(uri: Uri) = viewModelScope.launch {
+        val r = runCatching {
+            val b = broker.backup(BuildConfig.VERSION_NAME)
+            withContext(Dispatchers.IO) {
+                getApplication<Application>().contentResolver.openOutputStream(uri, "wt")!!.use { it.write(b.encode().toByteArray()) }
+            }
+            b
+        }
+        toast(r.fold({ "Backup saved - ${it.accounts.sumOf { a -> a.trades.size }} trades, ${it.accounts.sumOf { a -> a.orders.size }} orders" },
+            { "Backup failed: ${it.message}" }))
+    }
+
+    fun readBackup(uri: Uri) = viewModelScope.launch {
+        val text = runCatching {
+            withContext(Dispatchers.IO) { getApplication<Application>().contentResolver.openInputStream(uri)!!.use { it.readBytes().decodeToString() } }
+        }.getOrElse { toast("Couldn't open the file: ${it.message}"); return@launch }
+        BackupFile.parse(text).fold({ _restore.value = it }, { toast(it.message ?: "Not a valid backup") })
+    }
+
+    fun cancelRestore() { _restore.value = null }
+
+    fun confirmRestore() = viewModelScope.launch {
+        val b = _restore.value ?: return@launch
+        _restore.value = null
+        broker.restore(b)
+        reloadAccounts()
+        _ui.update { it.copy(trade = b.trade ?: it.trade) }
+        toast("Restored:\n${b.summary()}")
+        b.accounts.forEach { refreshMarket(it.market, bars = false) }
+    }
 
     // ─── export ──────────────────────────────────────────────────────────
 

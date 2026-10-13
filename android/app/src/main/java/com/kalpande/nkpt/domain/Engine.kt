@@ -20,6 +20,7 @@ import kotlin.math.min
 import kotlin.math.round
 import kotlin.math.sign
 
+@kotlinx.serialization.Serializable
 data class TradeSettings(
     /** adverse slippage on market / stop fills, basis points of price. */
     val slippageBpsUs: Double = 2.0,
@@ -387,13 +388,24 @@ object Engine {
         return equityPoint(a, now) to events
     }
 
-    /** Keeps one equity point per 15 minutes (the latest value wins inside the window). */
+    /** One equity point per 15 minutes (the latest value wins inside the window); history is never dropped -
+     *  see [compactEquity]. */
     fun equityPoint(acc: Account, t: Long): Account {
         val e = equity(acc)
         val last = acc.equity.lastOrNull()
         val pts = if (last != null && t - last.t < 15 * 60 && t >= last.t) acc.equity.dropLast(1) + EquityPoint(last.t, e)
         else acc.equity + EquityPoint(t, e)
-        return acc.copy(equity = if (pts.size > 6000) pts.drop(pts.size - 6000) else pts)
+        return acc.copy(equity = compactEquity(pts, acc.market, t))
+    }
+
+    /** Full 15-minute detail for the last [detailDays] days; older history keeps the very first point and
+     *  the last point of each day (the day's closing equity), so the curve always reaches back to the start. */
+    fun compactEquity(pts: List<EquityPoint>, m: Market, now: Long, detailDays: Long = 30): List<EquityPoint> {
+        val cut = now - detailDays * 86400
+        if (pts.isEmpty() || pts.first().t >= cut) return pts
+        val old = pts.filter { it.t < cut }
+        val daily = old.groupBy { MarketHours.localDate(m, it.t) }.values.map { it.last() }
+        return (listOf(old.first()) + daily).distinctBy { it.t }.sortedBy { it.t } + pts.filter { it.t >= cut }
     }
 
     fun hasWork(acc: Account) = acc.orders.any { it.status == OrderStatus.OPEN } ||

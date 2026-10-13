@@ -1,6 +1,9 @@
 package com.kalpande.nkpt.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -32,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kalpande.nkpt.BuildConfig
 import com.kalpande.nkpt.data.Market
+import com.kalpande.nkpt.data.Tokens
 import com.kalpande.nkpt.domain.Format
 import com.kalpande.nkpt.ui.MainViewModel
 import com.kalpande.nkpt.ui.UiState
@@ -50,15 +54,25 @@ fun SettingsScreen(vm: MainViewModel, ui: UiState) {
     var mis by remember(ui.trade) { mutableStateOf((ui.trade.nseIntradayMargin * 100).toInt().toString()) }
     var shortM by remember(ui.trade) { mutableStateOf((ui.trade.usShortMargin * 100).toInt().toString()) }
     val colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Palette.Accent, unfocusedBorderColor = Palette.Line)
+    val saver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri -> uri?.let(vm::backupTo) }
+    val opener = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(vm::readBackup) }
+    val pending by vm.pendingRestore.collectAsStateWithLifecycle()
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp)) {
         SectionTitle("NSE live prices (Upstox)")
         Card(Modifier.fillMaxWidth()) {
             Column {
+                val exp = Tokens.expiry(ui.token)
+                val nowS = System.currentTimeMillis() / 1000
                 Text(
-                    if (ui.token.isBlank()) "Without a token NSE prices come from 1-minute candles (up to ~1 minute behind). Charts, search and fills work either way."
-                    else "Token saved - NSE quotes are live. Upstox tokens expire every day around 3:30 AM IST; paste a fresh one when quotes fall back to candles.",
-                    color = Palette.Muted, fontSize = 12.sp,
+                    when {
+                        ui.token.isBlank() -> "Without a token NSE prices come from 1-minute candles (up to ~1 minute behind). Charts, search and fills work either way."
+                        exp != null && exp < nowS -> "⚠️ This token expired on ${Format.time(Market.NSE, exp, "dd MMM yyyy")} - paste a fresh one. NSE prices are back on 1-minute candles."
+                        exp != null -> "✅ Live NSE quotes on · ${if (Tokens.isExtended(ui.token)) "extended token, " else ""}valid until ${Format.time(Market.NSE, exp, "dd MMM yyyy")}" +
+                            if (exp - nowS < 7 * 86400) " - expires soon, paste a new one" else ""
+                        else -> "Token saved - NSE quotes are live."
+                    },
+                    color = if (exp != null && exp - nowS < 7 * 86400) Palette.Down else Palette.Muted, fontSize = 12.sp,
                 )
                 VSpace(10)
                 OutlinedTextField(token, { token = it.trim() }, singleLine = true, modifier = Modifier.fillMaxWidth(),
@@ -70,7 +84,7 @@ fun SettingsScreen(vm: MainViewModel, ui: UiState) {
                     OutlinedButton(onClick = { token = ""; vm.setToken("") }, shape = RoundedCornerShape(10.dp)) { Text("Remove") }
                 }
                 VSpace(6)
-                Text("Get it from your Upstox developer app (login once a day). It stays on this phone only.", color = Palette.Muted, fontSize = 11.sp)
+                Text("Use your long-lived Upstox (extended) token - the same one as the NSE alert bot. It stays on this phone only: it is never put in backups, never sent anywhere except Upstox.", color = Palette.Muted, fontSize = 11.sp)
             }
         }
 
@@ -97,6 +111,21 @@ fun SettingsScreen(vm: MainViewModel, ui: UiState) {
                         usShortMargin = (shortM.toDoubleOrNull()?.coerceIn(100.0, 300.0) ?: 150.0) / 100,
                     ))
                 }, shape = RoundedCornerShape(10.dp)) { Text("Apply") }
+            }
+        }
+
+        SectionTitle("Backup & restore")
+        Card(Modifier.fillMaxWidth()) {
+            Column {
+                Text("One file with every order, closed trade, open position, equity curve point, watchlist and strategy tag of both " +
+                    "accounts (your Upstox token is never included). Keep a copy in Drive - and use it to study which strategies " +
+                    "to automate in the US / NSE alert bots.", color = Palette.Muted, fontSize = 12.sp)
+                VSpace(10)
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(onClick = { saver.launch("nkpt_backup_${java.time.LocalDate.now()}.json") }, shape = RoundedCornerShape(10.dp)) { Text("Back up to file") }
+                    OutlinedButton(onClick = { opener.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) },
+                        shape = RoundedCornerShape(10.dp)) { Text("Restore from file") }
+                }
             }
         }
 
@@ -132,10 +161,24 @@ fun SettingsScreen(vm: MainViewModel, ui: UiState) {
                 Text("Nayan Kalpande PT ${BuildConfig.VERSION_NAME}", fontWeight = FontWeight.SemiBold)
                 Text("Paper trading only - no real orders are ever sent and no money moves.", color = Palette.Muted, fontSize = 12.sp)
                 VSpace(6)
-                Text("Charts: Lightweight Charts™ by TradingView (tradingview.com), Apache License 2.0.", color = Palette.Muted, fontSize = 12.sp)
+                Text("Charts are drawn natively by the app; live price refreshes every 2 s on the open chart (NSE: with the Upstox token).", color = Palette.Muted, fontSize = 12.sp)
                 Text("Charges model: Zerodha published equity rates (NSE); SEC + FINRA TAF sell fees (US).", color = Palette.Muted, fontSize = 12.sp)
             }
         }
+    }
+
+    pending?.let { b ->
+        AlertDialog(
+            onDismissRequest = vm::cancelRestore,
+            containerColor = Palette.Surface,
+            title = { Text("Restore this backup?") },
+            text = {
+                Text("Backup from ${java.time.Instant.ofEpochSecond(b.exportedAt).atZone(java.time.ZoneId.systemDefault()).toLocalDateTime().toString().replace('T', ' ').take(16)} " +
+                    "(app ${b.appVersion}):\n\n${b.summary()}\n\nThe accounts above REPLACE what is on this phone now. Back up first if you want to keep the current data.")
+            },
+            confirmButton = { TextButton(onClick = vm::confirmRestore) { Text("Restore", color = Palette.Down) } },
+            dismissButton = { TextButton(onClick = vm::cancelRestore) { Text("Cancel") } },
+        )
     }
 
     reset?.let { m ->

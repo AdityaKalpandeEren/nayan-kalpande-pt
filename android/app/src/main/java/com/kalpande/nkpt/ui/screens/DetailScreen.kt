@@ -30,7 +30,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -56,7 +55,7 @@ import com.kalpande.nkpt.domain.MarketHours
 import com.kalpande.nkpt.ui.MainViewModel
 import com.kalpande.nkpt.ui.UiState
 import com.kalpande.nkpt.ui.components.Card
-import com.kalpande.nkpt.ui.components.CandleChart
+import com.kalpande.nkpt.ui.components.PriceChart
 import com.kalpande.nkpt.ui.components.ChangeBadge
 import com.kalpande.nkpt.ui.components.ChartLine
 import com.kalpande.nkpt.ui.components.ChartMarker
@@ -77,10 +76,6 @@ fun DetailScreen(vm: MainViewModel, ui: UiState, m: Market, key: String, onBack:
     var ema by remember { mutableStateOf(true) }
     var vwap by remember { mutableStateOf(true) }
     DisposableEffect(key) { vm.open(ins); onDispose { vm.close() } }
-    // keep intraday charts live
-    LaunchedEffect(chart.tf, key, ui.lastRefresh / 60) {
-        if (chart.tf in setOf(Timeframe.M1, Timeframe.M5) && ui.lastRefresh > 0 && chart.candles.isNotEmpty()) vm.loadChart(ins, chart.tf)
-    }
 
     val a = ui.accounts.getValue(m)
     val q = ui.quotes[key]
@@ -132,13 +127,13 @@ fun DetailScreen(vm: MainViewModel, ui: UiState, m: Market, key: String, onBack:
             Box(Modifier.fillMaxWidth().height(360.dp)) {
                 val lines = positions.flatMap { p ->
                     listOfNotNull(
-                        ChartLine(p.avgPrice, "#4C8DFF", "Avg ${if (p.qty > 0) "+" else ""}${p.qty}"),
-                        p.stopLoss?.let { ChartLine(it, "#F6465D", "SL") },
-                        p.target?.let { ChartLine(it, "#00C087", "Target") },
+                        ChartLine(p.avgPrice, Palette.Accent, "Avg"),
+                        p.stopLoss?.let { ChartLine(it, Palette.Down, "SL") },
+                        p.target?.let { ChartLine(it, Palette.Up, "TGT") },
                     )
-                } + working.mapNotNull { o -> (o.limitPrice ?: o.triggerPrice)?.let { ChartLine(it, "#F0B90B", "${o.side} ${o.qty}") } }
+                } + working.mapNotNull { o -> (o.limitPrice ?: o.triggerPrice)?.let { ChartLine(it, Palette.Gold, if (o.side == Side.BUY) "B" else "S") } }
                 val markers = fills.map { ChartMarker(it.filledAt!!, it.side == Side.BUY, "${if (it.side == Side.BUY) "B" else "S"} ${it.qty}") }
-                CandleChart(m, chart.candles, intraday, "${chart.key}|${chart.tf}", lines, markers, ema, vwap, Modifier.fillMaxSize())
+                PriceChart(m, chart.candles, chart.tf, chart.key, lines, markers, ema, vwap && intraday, Modifier.fillMaxSize())
                 if (chart.loading && chart.candles.isEmpty()) CircularProgressIndicator(Modifier.align(Alignment.Center).size(28.dp), strokeWidth = 2.dp)
                 chart.error?.let { Text(it, color = Palette.Down, fontSize = 12.sp, modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp)) }
             }
