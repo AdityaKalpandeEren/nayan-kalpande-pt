@@ -14,6 +14,26 @@ ideas by hand, with broker-style charts, orders and analytics. Paper only: no re
 | **Charges & margin** | NSE: Zerodha equity rates (STT, exchange, SEBI, stamp, GST, DP), intraday 5x margin. US: SEC + FINRA TAF sell fees, shorts at 150% margin |
 | **Analytics** | Equity curve, win rate, profit factor, expectancy, payoff, avg R, max drawdown, streaks, t-stat - and breakdowns by **strategy tag**, intraday vs hold, long vs short, exit type, holding time, weekday, symbol. CSV export |
 
+## Backup, restore and using the data in the bots
+
+Settings → **Back up to file** saves one JSON file (format 1) with both accounts: every order, closed
+trade, open position, equity-curve point (last 30 days at 15 minutes, older ones daily - never dropped),
+watchlist and strategy tag, plus the fill settings. The Upstox token is never included. **Restore from
+file** shows what the file holds and asks before replacing the accounts on the phone.
+
+Read it from Python, e.g. to see which manually traded strategy tags are worth automating in the US / NSE
+alert bots (times are epoch seconds, UTC):
+
+```python
+import json, pandas as pd
+b = json.load(open("nkpt_backup_2026-10-13.json"))
+for acc in b["accounts"]:
+    t = pd.DataFrame(acc["trades"])
+    if t.empty: continue
+    t["net"] = t["gross"] - t["charges"]
+    print(acc["market"], t.groupby("strategy")["net"].agg(["count", "sum", "mean"]))
+```
+
 ## Data
 
 | Market | Source | Login |

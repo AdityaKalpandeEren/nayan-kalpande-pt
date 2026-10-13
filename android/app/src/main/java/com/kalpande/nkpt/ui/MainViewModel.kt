@@ -2,10 +2,13 @@ package com.kalpande.nkpt.ui
 
 import android.app.Application
 import android.content.Intent
+import android.net.Uri
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.kalpande.nkpt.BuildConfig
 import com.kalpande.nkpt.NkptApp
+import com.kalpande.nkpt.data.BackupFile
 import com.kalpande.nkpt.data.Account
 import com.kalpande.nkpt.data.Candle
 import com.kalpande.nkpt.data.Instrument
@@ -18,6 +21,7 @@ import com.kalpande.nkpt.domain.EngineEvent
 import com.kalpande.nkpt.domain.Format
 import com.kalpande.nkpt.domain.TradeSettings
 import com.kalpande.nkpt.work.FillWorker
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,6 +31,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 data class UiState(
@@ -276,6 +281,43 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setTrade(s: TradeSettings) = viewModelScope.launch { nk.settings.setTrade(s); _ui.update { it.copy(trade = s) } }
+
+    // ─── backup / restore ────────────────────────────────────────────────
+
+    private val _restore = MutableStateFlow<BackupFile?>(null)
+    /** A parsed backup waiting for the user's confirmation. */
+    val pendingRestore: StateFlow<BackupFile?> = _restore.asStateFlow()
+
+    fun backupTo(uri: Uri) = viewModelScope.launch {
+        val r = runCatching {
+            val b = broker.backup(BuildConfig.VERSION_NAME)
+            withContext(Dispatchers.IO) {
+                getApplication<Application>().contentResolver.openOutputStream(uri, "wt")!!.use { it.write(b.encode().toByteArray()) }
+            }
+            b
+        }
+        toast(r.fold({ "Backup saved - ${it.accounts.sumOf { a -> a.trades.size }} trades, ${it.accounts.sumOf { a -> a.orders.size }} orders" },
+            { "Backup failed: ${it.message}" }))
+    }
+
+    fun readBackup(uri: Uri) = viewModelScope.launch {
+        val text = runCatching {
+            withContext(Dispatchers.IO) { getApplication<Application>().contentResolver.openInputStream(uri)!!.use { it.readBytes().decodeToString() } }
+        }.getOrElse { toast("Couldn't open the file: ${it.message}"); return@launch }
+        BackupFile.parse(text).fold({ _restore.value = it }, { toast(it.message ?: "Not a valid backup") })
+    }
+
+    fun cancelRestore() { _restore.value = null }
+
+    fun confirmRestore() = viewModelScope.launch {
+        val b = _restore.value ?: return@launch
+        _restore.value = null
+        broker.restore(b)
+        reloadAccounts()
+        _ui.update { it.copy(trade = b.trade ?: it.trade) }
+        toast("Restored:\n${b.summary()}")
+        b.accounts.forEach { refreshMarket(it.market, bars = false) }
+    }
 
     // ─── export ──────────────────────────────────────────────────────────
 

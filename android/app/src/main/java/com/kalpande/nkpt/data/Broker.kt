@@ -67,6 +67,15 @@ class Broker(val store: AccountStore, val data: MarketData, val settings: Settin
         (if (name.isBlank() || name in a.strategies) a else a.copy(strategies = a.strategies + name.trim())) to Unit
     }
 
+    suspend fun backup(appVersion: String): BackupFile =
+        BackupFile(exportedAt = now(), appVersion = appVersion, trade = settings.tradeNow(), accounts = Market.entries.map { store.load(it) })
+
+    /** Replaces the accounts listed in [b] (and the fill settings); markets not in the file are left as they are. */
+    suspend fun restore(b: BackupFile) {
+        b.accounts.forEach { acc -> store.update(acc.market) { acc to Unit } }
+        b.trade?.let { settings.setTrade(it) }
+    }
+
     suspend fun reset(m: Market) = store.update(m) { a ->
         Account(m, createdAt = now(), watchlist = a.watchlist, strategies = a.strategies) to Unit
     }

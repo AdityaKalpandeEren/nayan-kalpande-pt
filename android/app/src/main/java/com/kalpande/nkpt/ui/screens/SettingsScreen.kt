@@ -1,6 +1,9 @@
 package com.kalpande.nkpt.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -50,6 +53,9 @@ fun SettingsScreen(vm: MainViewModel, ui: UiState) {
     var mis by remember(ui.trade) { mutableStateOf((ui.trade.nseIntradayMargin * 100).toInt().toString()) }
     var shortM by remember(ui.trade) { mutableStateOf((ui.trade.usShortMargin * 100).toInt().toString()) }
     val colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Palette.Accent, unfocusedBorderColor = Palette.Line)
+    val saver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri -> uri?.let(vm::backupTo) }
+    val opener = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(vm::readBackup) }
+    val pending by vm.pendingRestore.collectAsStateWithLifecycle()
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp)) {
         SectionTitle("NSE live prices (Upstox)")
@@ -100,6 +106,21 @@ fun SettingsScreen(vm: MainViewModel, ui: UiState) {
             }
         }
 
+        SectionTitle("Backup & restore")
+        Card(Modifier.fillMaxWidth()) {
+            Column {
+                Text("One file with every order, closed trade, open position, equity curve point, watchlist and strategy tag of both " +
+                    "accounts (your Upstox token is never included). Keep a copy in Drive - and use it to study which strategies " +
+                    "to automate in the US / NSE alert bots.", color = Palette.Muted, fontSize = 12.sp)
+                VSpace(10)
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(onClick = { saver.launch("nkpt_backup_${java.time.LocalDate.now()}.json") }, shape = RoundedCornerShape(10.dp)) { Text("Back up to file") }
+                    OutlinedButton(onClick = { opener.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) },
+                        shape = RoundedCornerShape(10.dp)) { Text("Restore from file") }
+                }
+            }
+        }
+
         SectionTitle("Accounts")
         Market.entries.forEach { m ->
             val a = ui.accounts.getValue(m)
@@ -136,6 +157,20 @@ fun SettingsScreen(vm: MainViewModel, ui: UiState) {
                 Text("Charges model: Zerodha published equity rates (NSE); SEC + FINRA TAF sell fees (US).", color = Palette.Muted, fontSize = 12.sp)
             }
         }
+    }
+
+    pending?.let { b ->
+        AlertDialog(
+            onDismissRequest = vm::cancelRestore,
+            containerColor = Palette.Surface,
+            title = { Text("Restore this backup?") },
+            text = {
+                Text("Backup from ${java.time.Instant.ofEpochSecond(b.exportedAt).atZone(java.time.ZoneId.systemDefault()).toLocalDateTime().toString().replace('T', ' ').take(16)} " +
+                    "(app ${b.appVersion}):\n\n${b.summary()}\n\nThe accounts above REPLACE what is on this phone now. Back up first if you want to keep the current data.")
+            },
+            confirmButton = { TextButton(onClick = vm::confirmRestore) { Text("Restore", color = Palette.Down) } },
+            dismissButton = { TextButton(onClick = vm::cancelRestore) { Text("Cancel") } },
+        )
     }
 
     reset?.let { m ->
