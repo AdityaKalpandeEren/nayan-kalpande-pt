@@ -1,6 +1,7 @@
 package com.kalpande.nkpt.data
 
 import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -41,6 +42,12 @@ class AccountStore(private val dir: File) {
         save(a)
         r
     }
+
+    /** Takes [remote] when it is newer than the phone's copy, or the phone has nothing yet. Returns it when taken. */
+    suspend fun replaceIfNewer(remote: Account): Account? = lock.withLock {
+        val local = load(remote.market)
+        if (remote.updatedAt > local.updatedAt || (local.isBlank && !remote.isBlank)) { save(remote); remote } else null
+    }
 }
 
 private val Context.prefs by preferencesDataStore("settings")
@@ -53,7 +60,23 @@ class SettingsRepository(private val ctx: Context) {
         val nseMis = doublePreferencesKey("nse_intraday_margin")
         val usShort = doublePreferencesKey("us_short_margin")
         val market = stringPreferencesKey("market")
+        val ghToken = stringPreferencesKey("github_token")
+        val ghRepo = stringPreferencesKey("github_repo")
+        val ghUser = stringPreferencesKey("github_user")
+        fun dirty(m: Market) = booleanPreferencesKey("sync_dirty_$m")
+        fun eod(m: Market) = stringPreferencesKey("sync_eod_$m")
     }
+
+    suspend fun cloud(): CloudConfig = ctx.prefs.data.first().let {
+        CloudConfig(it[K.ghToken].orEmpty(), it[K.ghRepo] ?: DEFAULT_DATA_REPO, it[K.ghUser].orEmpty())
+    }
+    suspend fun setCloud(token: String, repo: String, user: String) = ctx.prefs.edit {
+        it[K.ghToken] = token; it[K.ghRepo] = repo.ifBlank { DEFAULT_DATA_REPO }; it[K.ghUser] = user
+    }
+    suspend fun dirty(m: Market) = ctx.prefs.data.first()[K.dirty(m)] == true
+    suspend fun setDirty(m: Market, d: Boolean) = ctx.prefs.edit { it[K.dirty(m)] = d }
+    suspend fun lastEod(m: Market) = ctx.prefs.data.first()[K.eod(m)].orEmpty()
+    suspend fun setLastEod(m: Market, day: String) = ctx.prefs.edit { it[K.eod(m)] = day }
 
     val token: Flow<String> = ctx.prefs.data.map { it[K.token].orEmpty() }
     val market: Flow<Market> = ctx.prefs.data.map { p -> p[K.market]?.let { runCatching { Market.valueOf(it) }.getOrNull() } ?: Market.NSE }

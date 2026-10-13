@@ -141,7 +141,12 @@ data class Account(
     val equity: List<EquityPoint> = emptyList(),
     val watchlist: List<Instrument> = emptyList(),
     val strategies: List<String> = DEFAULT_STRATEGIES,
+    /** when the user or the engine last changed something (not bumped by price refreshes); newer wins on sync. */
+    val updatedAt: Long = 0,
 ) {
+    /** true for a fresh account with nothing worth keeping. */
+    val isBlank: Boolean get() = orders.isEmpty() && trades.isEmpty() && positions.isEmpty() && watchlist.isEmpty()
+
     companion object {
         val DEFAULT_STRATEGIES = listOf("Breakout", "Pullback", "Momentum", "Mean reversion", "Gap", "News", "Swing", "Long term")
     }

@@ -10,6 +10,8 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.kalpande.nkpt.data.AccountStore
 import com.kalpande.nkpt.data.Broker
+import com.kalpande.nkpt.data.CloudSync
+import com.kalpande.nkpt.data.GitHubStore
 import com.kalpande.nkpt.data.InstrumentRepository
 import com.kalpande.nkpt.data.MarketData
 import com.kalpande.nkpt.data.SettingsRepository
@@ -24,6 +26,8 @@ class NkptApp : Application() {
         private set
     lateinit var settings: SettingsRepository
         private set
+    lateinit var cloud: CloudSync
+        private set
 
     /** Upstox access token for NSE live quotes (blank = candles only). Kept in sync by Settings. */
     @Volatile
@@ -33,7 +37,11 @@ class NkptApp : Application() {
         super.onCreate()
         settings = SettingsRepository(this)
         upstoxToken = runBlocking { settings.tokenNow() }
-        broker = Broker(AccountStore(filesDir), MarketData { upstoxToken }, settings)
+        val store = AccountStore(filesDir)
+        broker = Broker(store, MarketData { upstoxToken }, settings)
+        cloud = CloudSync(store, settings, GitHubStore({ settings.cloud().token }, { settings.cloud().repo }))
+        runBlocking { cloud.init() }
+        broker.onChange = { m, why -> cloud.request(m, why) }
         instruments = InstrumentRepository(filesDir)
 
         getSystemService(NotificationManager::class.java).createNotificationChannel(

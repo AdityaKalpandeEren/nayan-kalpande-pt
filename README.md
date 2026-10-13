@@ -15,6 +15,16 @@ ideas by hand, with broker-style charts, orders and analytics. Paper only: no re
 | **Charges & margin** | NSE: Zerodha equity rates (STT, exchange, SEBI, stamp, GST, DP), intraday 5x margin. US: SEC + FINRA TAF sell fees, shorts at 150% margin |
 | **Analytics** | Equity curve, win rate, profit factor, expectancy, payoff, avg R, max drawdown, streaks, t-stat - and breakdowns by **strategy tag**, intraday vs hold, long vs short, exit type, holding time, weekday, symbol. CSV export |
 
+## Online storage (GitHub)
+
+Settings → **Online storage (GitHub)**: data repo (default `AdityaKalpandeEren/nkpt-data`, private) + a fine-grained token
+(only that repo, Contents = Read and write). From then on every order, fill, exit, SL/target edit, watchlist / strategy
+change, reset and restore is committed ~2 s later as one commit to `users/<login>/<NSE|US>/`:
+`state.json` (the full account), `trades.csv`, `orders.csv` and `daily/<date>.json`; an end-of-day commit follows each close.
+Background fills push too. Failed pushes are retried. On start / Connect / Sync now the app loads the GitHub copy when it is
+newer (new phone, reinstall, another device). Each user's token picks their folder, so more users just add folders.
+The token stays on the phone (not in backups, not in the repo). See the data repo README for pulling it into research.
+
 ## Backup, restore and using the data in the bots
 
 Settings → **Back up to file** saves one JSON file (format 1) with both accounts: every order, closed
