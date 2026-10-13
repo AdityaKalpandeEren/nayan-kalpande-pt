@@ -56,6 +56,9 @@ import com.kalpande.nkpt.ui.MainViewModel
 import com.kalpande.nkpt.ui.UiState
 import com.kalpande.nkpt.ui.components.Card
 import com.kalpande.nkpt.ui.components.PriceChart
+import com.kalpande.nkpt.ui.components.EMAS
+import com.kalpande.nkpt.ui.components.VwapColor
+import androidx.compose.runtime.saveable.rememberSaveable
 import com.kalpande.nkpt.ui.components.ChangeBadge
 import com.kalpande.nkpt.ui.components.ChartLine
 import com.kalpande.nkpt.ui.components.ChartMarker
@@ -73,7 +76,7 @@ fun DetailScreen(vm: MainViewModel, ui: UiState, m: Market, key: String, onBack:
     val chart by vm.chart.collectAsStateWithLifecycle()
     var ticket by remember { mutableStateOf<Side?>(null) }
     var editing by remember { mutableStateOf<Position?>(null) }
-    var ema by remember { mutableStateOf(true) }
+    var emas by rememberSaveable { mutableStateOf(EMAS.map { it.len }) }
     var vwap by remember { mutableStateOf(true) }
     DisposableEffect(key) { vm.open(ins); onDispose { vm.close() } }
 
@@ -119,9 +122,13 @@ fun DetailScreen(vm: MainViewModel, ui: UiState, m: Market, key: String, onBack:
                 Timeframe.entries.forEach { tf ->
                     Chip(tf.label, chart.tf == tf) { vm.loadChart(ins, tf) }
                 }
-                HSpace(8)
-                Chip("EMA 20/50", ema, Palette.Gold) { ema = !ema }
-                if (intraday) Chip("VWAP", vwap, Color(0xFF2EC5FF)) { vwap = !vwap }
+            }
+            VSpace(6)
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                EMAS.forEach { e ->
+                    Chip("EMA ${e.len}", e.len in emas, e.color) { emas = if (e.len in emas) emas - e.len else (emas + e.len).sorted() }
+                }
+                if (intraday) Chip("VWAP", vwap, VwapColor) { vwap = !vwap }
             }
             VSpace(6)
             Box(Modifier.fillMaxWidth().height(360.dp)) {
@@ -133,7 +140,7 @@ fun DetailScreen(vm: MainViewModel, ui: UiState, m: Market, key: String, onBack:
                     )
                 } + working.mapNotNull { o -> (o.limitPrice ?: o.triggerPrice)?.let { ChartLine(it, Palette.Gold, if (o.side == Side.BUY) "B" else "S") } }
                 val markers = fills.map { ChartMarker(it.filledAt!!, it.side == Side.BUY, "${if (it.side == Side.BUY) "B" else "S"} ${it.qty}") }
-                PriceChart(m, chart.candles, chart.tf, chart.key, lines, markers, ema, vwap && intraday, Modifier.fillMaxSize())
+                PriceChart(m, chart.candles, chart.tf, chart.key, lines, markers, emas.toSet(), vwap && intraday, Modifier.fillMaxSize())
                 if (chart.loading && chart.candles.isEmpty()) CircularProgressIndicator(Modifier.align(Alignment.Center).size(28.dp), strokeWidth = 2.dp)
                 chart.error?.let { Text(it, color = Palette.Down, fontSize = 12.sp, modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp)) }
             }

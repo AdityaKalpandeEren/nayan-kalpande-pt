@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
@@ -50,11 +51,20 @@ import kotlin.math.roundToInt
 data class ChartLine(val price: Double, val color: Color, val title: String)
 data class ChartMarker(val time: Long, val buy: Boolean, val text: String)
 
-private val Vwap = Color(0xFF2EC5FF)
-private val Ema50 = Color(0xFFB46CFF)
+val VwapColor = Color(0xFF2EC5FF)
+
+/** The EMA set: each a different colour (none red/green, so they never look like candles) and thicker as it gets slower. */
+data class EmaSpec(val len: Int, val color: Color, val width: Float)
+val EMAS = listOf(
+    EmaSpec(20, Color(0xFFF0B90B), 1.3f),    // yellow
+    EmaSpec(50, Color(0xFFB46CFF), 1.5f),    // purple
+    EmaSpec(80, Color(0xFFFF8A3D), 1.6f),    // orange
+    EmaSpec(100, Color(0xFFFF5FD2), 1.8f),   // pink
+    EmaSpec(180, Color(0xFFF2F4F8), 2.2f),   // white, thickest
+)
 
 /**
- * Native candlestick chart (Compose Canvas): candles + volume, EMA 20/50, session VWAP, live
+ * Native candlestick chart (Compose Canvas): candles + volume, EMA 20/50/80/100/180, session VWAP, live
  * last-price line, position / order lines, fill markers. Pinch to zoom, drag sideways to scroll
  * (vertical drags still scroll the page), long-press for the crosshair + OHLC, tap to clear it.
  */
@@ -66,7 +76,7 @@ fun PriceChart(
     key: String,
     lines: List<ChartLine>,
     markers: List<ChartMarker>,
-    showEma: Boolean,
+    emas: Set<Int>,
     showVwap: Boolean,
     modifier: Modifier = Modifier,
 ) {
@@ -76,10 +86,9 @@ fun PriceChart(
     var offset by remember(key, tf) { mutableFloatStateOf(-3f) }
     var cross by remember(key, tf) { mutableStateOf<Offset?>(null) }
     val n = candles.size
-    val ema20 = remember(candles) { ema(candles, 20) }
-    val ema50 = remember(candles) { ema(candles, 50) }
+    val emaValues = remember(candles) { EMAS.associate { it.len to ema(candles, it.len) } }
     val vwap = remember(candles) { if (Bars.intraday(tf)) sessionVwap(market, candles) else arrayOfNulls(n) }
-    val minW = 2f * density.density
+    val minW = 0.6f * density.density          // zoomed out: 5 years of daily candles fit on screen
     val maxW = 40f * density.density
 
     Canvas(
@@ -116,19 +125,19 @@ fun PriceChart(
             .pointerInput(key, tf) { detectTapGestures(onTap = { cross = null }) }
     ) {
         if (n == 0) return@Canvas
-        drawChart(tm, market, tf, candles, lines, markers, if (showEma) ema20 else null, if (showEma) ema50 else null,
+        drawChart(tm, market, tf, candles, lines, markers, EMAS.filter { it.len in emas }.map { it to emaValues.getValue(it.len) },
             if (showVwap) vwap else null, barW, offset, cross)
     }
 }
 
 private fun DrawScope.drawChart(
     tm: TextMeasurer, m: Market, tf: Timeframe, c: List<Candle>, lines: List<ChartLine>, markers: List<ChartMarker>,
-    e20: Array<Double?>?, e50: Array<Double?>?, vw: Array<Double?>?, barW: Float, offset: Float, cross: Offset?,
+    emas: List<Pair<EmaSpec, Array<Double?>>>, vw: Array<Double?>?, barW: Float, offset: Float, cross: Offset?,
 ) {
     val dp = density
     val axisW = 60 * dp
     val timeH = 18 * dp
-    val top = 22 * dp
+    val top = 36 * dp
     val pw = size.width - axisW
     val chartBottom = size.height - timeH
     val volTop = chartBottom - (chartBottom - top) * 0.18f
@@ -201,7 +210,7 @@ private fun DrawScope.drawChart(
     }
 
     // indicators
-    fun series(v: Array<Double?>?, color: Color, dashed: Boolean = false) {
+    fun series(v: Array<Double?>?, color: Color, dashed: Boolean = false, width: Float = 1.4f) {
         if (v == null) return
         val p = Path(); var started = false
         for (i in vis) {
@@ -209,9 +218,29 @@ private fun DrawScope.drawChart(
             if (value == null) { started = false; continue }
             if (!started) { p.moveTo(x(i), y(value)); started = true } else p.lineTo(x(i), y(value))
         }
-        drawPath(p, color, style = Stroke(width = 1.4f * dp, pathEffect = if (dashed) PathEffect.dashPathEffect(floatArrayOf(6f, 5f)) else null))
+        drawPath(p, color, style = Stroke(width = width * dp, pathEffect = if (dashed) PathEffect.dashPathEffect(floatArrayOf(6f, 5f)) else null))
     }
-    series(e20, Palette.Gold); series(e50, Ema50); series(vw, Vwap, dashed = true)
+    clipRect(0f, top - 4 * dp, pw, priceBottom + 2 * dp) {                       // lines never spill into volume / time axis
+        emas.asReversed().forEach { (e, v) -> series(v, e.color, width = e.width) }  // slow ones underneath
+        series(vw, VwapColor, dashed = true, width = 1.6f)
+    }
+
+    // name tag at the right end of every line ("20", "50", ... "VWAP"), pushed apart so they never overlap
+    run {
+        val tags = (emas.map { (e, v) -> Triple(e.len.toString(), e.color, v) } + listOfNotNull(vw?.let { Triple("VWAP", VwapColor, it) }))
+            .mapNotNull { (name, col, v) -> v.getOrNull(last)?.let { Triple(name, col, y(it)) } }
+            .filter { it.third in top..priceBottom }
+            .sortedBy { it.third }
+        val gap = 12 * dp
+        var prevY = -1e9f
+        tags.forEach { (name, col, yRaw) ->
+            val yy = max(yRaw, prevY + gap); prevY = yy
+            val t = tm.measure(name, TextStyle(color = col, fontSize = 9.sp, fontWeight = FontWeight.Bold))
+            val bx = min(x(last) + barW, pw) - t.size.width - 6 * dp
+            drawRect(Palette.Bg.copy(alpha = 0.75f), Offset(bx - 2 * dp, yy - t.size.height / 2f), Size(t.size.width + 4 * dp, t.size.height.toFloat()))
+            drawText(t, topLeft = Offset(bx, yy - t.size.height / 2f))
+        }
+    }
 
     // fill markers
     for (mk in markers) {
@@ -288,6 +317,15 @@ private fun DrawScope.drawChart(
         pushStyle(androidx.compose.ui.text.SpanStyle(color = if (chg >= 0) Palette.Up else Palette.Down)); append(String.format(Locale.US, "%+.2f%%", chg)); pop()
     }
     drawText(tm.measure(legend, TextStyle(fontSize = 10.sp)), topLeft = Offset(4 * dp, 3 * dp))
+    val idx = ci ?: (n - 1)
+    val ind = androidx.compose.ui.text.buildAnnotatedString {
+        emas.forEach { (e, v) ->
+            pushStyle(androidx.compose.ui.text.SpanStyle(color = e.color, fontWeight = FontWeight.SemiBold))
+            append("${e.len} ${v.getOrNull(idx)?.let { Format.price(m, it) } ?: "—"}  "); pop()
+        }
+        vw?.getOrNull(idx)?.let { pushStyle(androidx.compose.ui.text.SpanStyle(color = VwapColor, fontWeight = FontWeight.SemiBold)); append("VW ${Format.price(m, it)}"); pop() }
+    }
+    if (ind.isNotEmpty()) drawText(tm.measure(ind, TextStyle(fontSize = 9.sp), maxLines = 1, softWrap = false), topLeft = Offset(4 * dp, 18 * dp))
 }
 
 private fun niceStep(raw: Double): Double {
@@ -300,8 +338,10 @@ private fun niceStep(raw: Double): Double {
 private fun ema(c: List<Candle>, len: Int): Array<Double?> {
     val out = arrayOfNulls<Double>(c.size)
     val k = 2.0 / (len + 1)
-    var e: Double? = null
-    c.forEachIndexed { i, b -> e = e?.let { b.c * k + it * (1 - k) } ?: b.c; if (i >= len - 1) out[i] = e }
+    if (c.size < len) return out
+    var e = (0 until len).sumOf { c[it].c } / len          // seeded with the SMA of the first [len] closes, like TradingView
+    out[len - 1] = e
+    for (i in len until c.size) { e = c[i].c * k + e * (1 - k); out[i] = e }
     return out
 }
 

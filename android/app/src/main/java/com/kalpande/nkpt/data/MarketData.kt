@@ -127,7 +127,7 @@ class MarketData(private val token: () -> String) {
             Timeframe.M5 -> listOf(async { upstoxHistorical(key, "minutes", 5, y, y.minusDays(8)) }, async { upstoxIntraday(key, "minutes", 5) })
             Timeframe.M15 -> listOf(async { upstoxHistorical(key, "minutes", 15, y, y.minusDays(30)) }, async { upstoxIntraday(key, "minutes", 15) })
             Timeframe.H1 -> listOf(async { upstoxHistorical(key, "hours", 1, y, y.minusDays(90)) }, async { upstoxIntraday(key, "hours", 1) })
-            Timeframe.D1 -> listOf(async { upstoxHistorical(key, "days", 1, today, today.minusDays(730)) }, async { listOfNotNull(todayBar(key)) })
+            Timeframe.D1 -> listOf(async { upstoxHistorical(key, "days", 1, today, today.minusYears(5)) }, async { listOfNotNull(todayBar(key)) })
             Timeframe.W1 -> listOf(async { upstoxHistorical(key, "weeks", 1, today, today.minusYears(10)) })
         }
         merge(parts.awaitAll().flatten())
@@ -178,7 +178,7 @@ class MarketData(private val token: () -> String) {
             Timeframe.M5 -> "5m" to "1mo"
             Timeframe.M15 -> "15m" to "1mo"
             Timeframe.H1 -> "60m" to "6mo"
-            Timeframe.D1 -> "1d" to "2y"
+            Timeframe.D1 -> "1d" to "5y"
             Timeframe.W1 -> "1wk" to "10y"
         }
         return yahooChart(symbol, interval, range)
