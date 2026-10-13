@@ -1,0 +1,73 @@
+package com.kalpande.nkpt.data
+
+import com.kalpande.nkpt.domain.Engine
+import com.kalpande.nkpt.domain.EngineEvent
+import com.kalpande.nkpt.domain.PlaceResult
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlin.math.abs
+
+data class RefreshResult(val account: Account, val quotes: Map<String, Quote>, val events: List<EngineEvent>)
+
+/** Data + engine + storage: one place that the screens and the background worker both call. */
+class Broker(val store: AccountStore, val data: MarketData, val settings: SettingsRepository) {
+    private fun now() = System.currentTimeMillis() / 1000
+
+    /**
+     * Quotes for the watchlist, positions and working orders (+ [extra]), then the live-quote pass;
+     * with [bars] also the 1-minute bar pass for every instrument with a working order or exit.
+     */
+    suspend fun refresh(m: Market, extra: Collection<String> = emptyList(), bars: Boolean = true): RefreshResult {
+        val s = settings.tradeNow()
+        val a0 = store.load(m)
+        val keys = (a0.watchlist.map { it.key } + a0.positions.map { it.key } +
+            a0.orders.filter { it.status == OrderStatus.OPEN }.map { it.key } + extra).toSet()
+        val quotes = data.quotes(m, keys)
+        val barMap: Map<String, List<Candle>> = if (bars && Engine.hasWork(a0)) coroutineScope {
+            val since = mutableMapOf<String, Long>()
+            a0.orders.filter { it.status == OrderStatus.OPEN }.forEach { since.merge(it.key, it.checkedUntil, ::minOf) }
+            a0.positions.forEach { since.merge(it.key, it.checkedUntil, ::minOf) }
+            since.map { (k, t) -> async { k to runCatching { data.bars(m, k, t) }.getOrDefault(emptyList()) } }.awaitAll().toMap()
+        } else emptyMap()
+        val t = now()
+        val (acc, events) = store.update(m) { a ->
+            var x = a
+            val ev = mutableListOf<EngineEvent>()
+            if (barMap.isNotEmpty()) Engine.onBars(x, barMap, t, s).let { (n, e) -> x = n; ev += e }
+            Engine.onQuotes(x, quotes, t, s).let { (n, e) -> x = n; ev += e }
+            x to (x to ev)
+        }
+        return RefreshResult(acc, quotes, events)
+    }
+
+    suspend fun place(m: Market, req: OrderRequest): PlaceResult {
+        val s = settings.tradeNow()
+        val q = runCatching { data.quotes(m, listOf(req.instrument.key))[req.instrument.key] }.getOrNull()
+        return store.update(m) { a ->
+            val r = Engine.place(a, req, q, now(), s)
+            r.account to r
+        }
+    }
+
+    suspend fun cancel(m: Market, orderId: String) = store.update(m) { a -> Engine.cancel(a, orderId) to Unit }
+
+    suspend fun exit(m: Market, position: Position): PlaceResult {
+        val ins = Instrument(m, position.symbol, position.name, position.key)
+        return place(m, OrderRequest(ins, if (position.isLong) Side.SELL else Side.BUY, abs(position.qty), OrderType.MARKET, position.product,
+            strategy = position.strategy))
+    }
+
+    suspend fun modifyExits(m: Market, positionId: String, sl: Double?, target: Double?): String? =
+        store.update(m) { a -> Engine.modifyExits(a, positionId, sl, target) }
+
+    suspend fun setWatchlist(m: Market, items: List<Instrument>) = store.update(m) { a -> a.copy(watchlist = items) to Unit }
+
+    suspend fun addStrategy(m: Market, name: String) = store.update(m) { a ->
+        (if (name.isBlank() || name in a.strategies) a else a.copy(strategies = a.strategies + name.trim())) to Unit
+    }
+
+    suspend fun reset(m: Market) = store.update(m) { a ->
+        Account(m, createdAt = now(), watchlist = a.watchlist, strategies = a.strategies) to Unit
+    }
+}
